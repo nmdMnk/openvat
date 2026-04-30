@@ -200,6 +200,9 @@ class OBJECT_PT_VAT_OUTPUT(bpy.types.Panel):
             grid.prop(settings, "mesh_format", text="")
         grid.label(text="Image Format")
         grid.prop(settings, "image_format", text="")
+        if settings.export_mesh and settings.mesh_format == 'FBX':
+            row = layout.row()
+            row.prop(settings, "unreal_axis_convention", toggle=True)
         row = layout.row()
         row.prop(settings, "use_single_row", toggle=True)
         if settings.image_format == 'EXR32':

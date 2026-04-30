@@ -137,6 +137,12 @@ class VATSettings(bpy.types.PropertyGroup):
         ],
         default='FBX'
     )
+
+    unreal_axis_convention: bpy.props.BoolProperty(
+        name="Unreal Axis Convention",
+        description="Export FBX with Y Forward / Z Up axes to match Unreal Engine / Send to Unreal convention",
+        default=False
+    )
     
     use_transform: bpy.props.BoolProperty(
         name="Bake World Transform",

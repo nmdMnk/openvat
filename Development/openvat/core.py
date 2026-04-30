@@ -640,6 +640,10 @@ def export_vat_model(file_format='FBX', include_materials=False, include_tangent
     export_path = os.path.join(object_directory, f"{export_name}.{export_ext}")
 
     if file_format.upper() == 'FBX':
+        axis_kwargs = {}
+        if bpy.context.scene.vat_settings.unreal_axis_convention:
+            axis_kwargs = {'axis_forward': 'Y', 'axis_up': 'Z'}
+
         bpy.ops.export_scene.fbx(
             filepath=export_path,
             use_selection=True,
@@ -647,6 +651,7 @@ def export_vat_model(file_format='FBX', include_materials=False, include_tangent
             global_scale=1.0,
             apply_unit_scale=True,
             bake_space_transform=False,
+            **axis_kwargs,
             object_types={'MESH'},
             use_mesh_modifiers=False,
             use_mesh_modifiers_render=False,
