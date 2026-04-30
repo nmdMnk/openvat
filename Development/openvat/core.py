@@ -3,6 +3,7 @@
 import bpy
 import bmesh
 import os
+from mathutils import Vector
 from . import utils
 
 
@@ -352,9 +353,95 @@ def setup_proxy_scene(
     bpy.data.objects.remove(obj)
 
     if settings.export_mesh:
+        if (
+            settings.mesh_format.upper() == "FBX"
+            and settings.export_unreal_box_collision
+        ):
+            collision_obj = create_unreal_box_collision(vat_obj)
+            collision_obj.select_set(True)
+            vat_obj.select_set(True)
+            bpy.context.view_layer.objects.active = vat_obj
+
         export_vat_model(
             settings.mesh_format, include_materials=False, include_tangents=True
         )
+
+
+def create_unreal_box_collision(obj):
+    """Create/update a UBX collision box around the VAT mesh for Unreal FBX import."""
+    if obj is None or obj.type != "MESH":
+        raise Exception("Collision source object must be a mesh")
+
+    bpy.context.view_layer.update()
+
+    world_points = [obj.matrix_world @ vert.co for vert in obj.data.vertices]
+    if not world_points:
+        raise Exception(f"Cannot create collision for {obj.name}: mesh has no vertices")
+
+    bounds_min = Vector(
+        (
+            min(point.x for point in world_points),
+            min(point.y for point in world_points),
+            min(point.z for point in world_points),
+        )
+    )
+    bounds_max = Vector(
+        (
+            max(point.x for point in world_points),
+            max(point.y for point in world_points),
+            max(point.z for point in world_points),
+        )
+    )
+    center = (bounds_min + bounds_max) * 0.5
+    extent = (bounds_max - bounds_min) * 0.5
+
+    collision_name = f"UBX_{obj.name}_00"
+    collision_obj = bpy.data.objects.get(collision_name)
+    if collision_obj is None:
+        collision_mesh = bpy.data.meshes.new(f"{collision_name}_Mesh")
+        collision_obj = bpy.data.objects.new(collision_name, collision_mesh)
+        first_collection = (
+            obj.users_collection[0]
+            if obj.users_collection
+            else bpy.context.scene.collection
+        )
+        first_collection.objects.link(collision_obj)
+    else:
+        collision_mesh = collision_obj.data
+        collision_mesh.clear_geometry()
+
+    x, y, z = extent.x, extent.y, extent.z
+    verts = [
+        (-x, -y, -z),
+        (x, -y, -z),
+        (x, y, -z),
+        (-x, y, -z),
+        (-x, -y, z),
+        (x, -y, z),
+        (x, y, z),
+        (-x, y, z),
+    ]
+    faces = [
+        (0, 1, 2, 3),
+        (4, 7, 6, 5),
+        (0, 4, 5, 1),
+        (1, 5, 6, 2),
+        (2, 6, 7, 3),
+        (3, 7, 4, 0),
+    ]
+    collision_mesh.from_pydata(verts, [], faces)
+    collision_mesh.update()
+
+    collision_obj.location = center
+    collision_obj.rotation_euler = (0.0, 0.0, 0.0)
+    collision_obj.scale = (1.0, 1.0, 1.0)
+    collision_obj.display_type = "WIRE"
+    collision_obj.show_wire = True
+    collision_obj.show_in_front = True
+    collision_obj.hide_render = True
+
+    # FBX collision naming is what makes Unreal consume this as simple collision.
+    return collision_obj
 
 
 def setup_vat_scene(
@@ -571,8 +658,6 @@ def setup_compositing(
     setup_alpha_over_node(
         alpha_over_node, image_node, render_layers_node, output_socket, links
     )
-
-
 
 
 # Called to render temporary frames to first prime the compositor, then through sequence for vat and optionally vnrm
