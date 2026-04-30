@@ -312,12 +312,20 @@ def setup_proxy_scene(
     mod["Socket_6"] = num_frames
     mod["Socket_7"] = height
     mod["Socket_9"] = image_result
-    mod["Socket_3"] = original_scene["min_x"]
-    mod["Socket_4"] = original_scene["max_x"]
-    mod["Socket_10"] = original_scene["min_y"]
-    mod["Socket_11"] = original_scene["max_y"]
-    mod["Socket_12"] = original_scene["min_z"]
-    mod["Socket_13"] = original_scene["max_z"]
+    if original_scene.vat_settings.no_remap:
+        mod["Socket_3"] = 0.0
+        mod["Socket_4"] = 1.0
+        mod["Socket_10"] = 0.0
+        mod["Socket_11"] = 1.0
+        mod["Socket_12"] = 0.0
+        mod["Socket_13"] = 1.0
+    else:
+        mod["Socket_3"] = original_scene["min_x"]
+        mod["Socket_4"] = original_scene["max_x"]
+        mod["Socket_10"] = original_scene["min_y"]
+        mod["Socket_11"] = original_scene["max_y"]
+        mod["Socket_12"] = original_scene["min_z"]
+        mod["Socket_13"] = original_scene["max_z"]
     mod["Socket_14"] = original_scene.frame_start
 
     bpy.ops.object.editmode_toggle()
@@ -455,12 +463,43 @@ def setup_vat_scene(
     )
     vat_scene.render.filepath = output_path
 
-    # un-normalize
+    # un-normalize: remap position pixels from [0,1] to absolute values directly in Python
+    # This avoids the compositor entirely, giving full control over which pixels to remap
     if original_scene.vat_settings.image_format == "EXR32":
         if original_scene.vat_settings.no_remap:
-            setup_unnormalize(vat_scene, original_scene, "os-remap")
-            bpy.ops.render.render(write_still=True)
-            bpy.data.images[output_name + ".exr"].reload()
+            exr_image = bpy.data.images.get(output_name + ".exr")
+            if exr_image is not None:
+                pixels = list(exr_image.pixels)
+                w = exr_image.size[0]
+                h = exr_image.size[1]
+
+                min_v = [
+                    original_scene["min_x"],
+                    original_scene["min_y"],
+                    original_scene["min_z"],
+                ]
+                max_v = [
+                    original_scene["max_x"],
+                    original_scene["max_y"],
+                    original_scene["max_z"],
+                ]
+                rng = [max_v[c] - min_v[c] for c in range(3)]
+
+                # Blender pixels are bottom-to-top. With packed normals:
+                #   bottom half (rows 0..h/2-1) = normals → skip
+                #   top half (rows h/2..h-1)    = positions → remap
+                # Without packed normals: remap all rows
+                start_row = (h // 2) if pack_normals else 0
+
+                for row in range(start_row, h):
+                    for col in range(w):
+                        idx = (row * w + col) * 4
+                        for c in range(3):
+                            pixels[idx + c] = min_v[c] + pixels[idx + c] * rng[c]
+
+                exr_image.pixels[:] = pixels
+                exr_image.save()
+                exr_image.reload()
 
     # Render VNRM
     if not pack_normals:
@@ -534,69 +573,6 @@ def setup_compositing(
     )
 
 
-def setup_unnormalize(vat_scene, original_scene, attribute_name):
-    tree = get_scene_compositor_tree(
-        vat_scene, ensure=True, name=f"{vat_scene.name}_unnorm"
-    )
-    if tree is None:
-        print("❌ No compositor node tree available.")
-        return
-
-    links = tree.links
-
-    # Clear existing nodes
-    for node in list(tree.nodes):
-        tree.nodes.remove(node)
-
-    # Load per-channel remap min/max from original_scene custom properties
-    min_x = original_scene["min_x"]
-    min_y = original_scene["min_y"]
-    min_z = original_scene["min_z"]
-    max_x = original_scene["max_x"]
-    max_y = original_scene["max_y"]
-    max_z = original_scene["max_z"]
-
-    # Load baked EXR
-    image_name = vat_scene.name.replace("_ovbake", "") + ".exr"
-    image = bpy.data.images.get(image_name)
-    if not image:
-        print(f"Image not found: {image_name}")
-        return
-    image.colorspace_settings.name = "Non-Color"
-    image.use_half_precision = False
-
-    # Create nodes
-    image_node = tree.nodes.new("CompositorNodeImage")
-    separate_node = tree.nodes.new("CompositorNodeSepRGBA")
-    combine_node = tree.nodes.new("CompositorNodeCombRGBA")
-
-    image_node.image = image
-    links.new(image_node.outputs[0], separate_node.inputs[0])
-
-    for i, (min_val, max_val) in enumerate(
-        [(min_x, max_x), (min_y, max_y), (min_z, max_z)]
-    ):
-        map_range = tree.nodes.new("CompositorNodeMapRange")
-        map_range.inputs["From Min"].default_value = 0.0
-        map_range.inputs["From Max"].default_value = 1.0
-        map_range.inputs["To Min"].default_value = min_val
-        map_range.inputs["To Max"].default_value = max_val
-        map_range.use_clamp = False
-        map_range.location = (300, -120 * i)
-
-        links.new(separate_node.outputs[i], map_range.inputs[0])
-        links.new(map_range.outputs[0], combine_node.inputs[i])
-
-    # Pass alpha through directly
-    links.new(separate_node.outputs[3], combine_node.inputs[3])
-
-    # 5.0-safe: use Group Output (or Composite in 4.x) via helper
-    output_node, output_socket = get_compositor_output_socket(
-        tree, ensure_interface=True
-    )
-    links.new(combine_node.outputs[0], output_socket)
-
-    print("✅ Unnormalize-only compositing setup complete using Map Range nodes.")
 
 
 # Called to render temporary frames to first prime the compositor, then through sequence for vat and optionally vnrm
